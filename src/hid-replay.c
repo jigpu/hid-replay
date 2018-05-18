@@ -233,8 +233,9 @@ static void hid_replay_sleep(struct hid_replay_devices_list *devices,
 	} while (current_timeout > 0);
 }
 
-static void hid_replay_event(int fuhid, char *ubuf, ssize_t len, struct timeval *time, bool accurate_timing)
+static void hid_replay_event(int fuhid, char *ubuf, ssize_t len, struct timeval *ref_stream_time, struct timeval *ref_real_time, bool accurate_timing)
 {
+	struct timeval now;
 	struct uhid_event ev;
 	struct uhid_input_req *input = &ev.u.input;
 	int event_len, i;
@@ -252,22 +253,31 @@ static void hid_replay_event(int fuhid, char *ubuf, ssize_t len, struct timeval 
 	ev_time.tv_sec = sec;
 	ev_time.tv_usec = usec;
 
-	if (time->tv_sec == 0 && time->tv_usec == 0)
-		*time = ev_time;
+	if (ref_stream_time->tv_sec == 0 && ref_stream_time->tv_usec == 0) {
+		*ref_stream_time = ev_time;
+		gettimeofday(ref_real_time, NULL);
+	}
 
-	usec = 1000000L * (ev_time.tv_sec - time->tv_sec);
-	usec += ev_time.tv_usec - time->tv_usec;
+	gettimeofday(&now, NULL);
+
+	usec = 1000000L * (ev_time.tv_sec - ref_stream_time->tv_sec);
+	usec += ev_time.tv_usec - ref_stream_time->tv_usec;
+	usec -= 1000000L * (now.tv_sec - ref_real_time->tv_sec);
+	usec -= now.tv_usec - ref_real_time->tv_usec;
 
 	if (accurate_timing && usec > 0) {
 		hid_replay_sleep(devices, usec);
-		*time = ev_time;
 	}
 	else if (usec > 500) {
-		if (usec > 3000000)
-			usec = 3000000;
-		hid_replay_sleep(devices, usec);
+		if (usec > 3000000) {
+			/* fake that we aren't actually sleeping */
+			ref_real_time->tv_usec -= usec % 1000000L;
+			ref_real_time->tv_sec -= usec / 1000000L;
+			ref_real_time->tv_sec += 3;
 
-		*time = ev_time;
+			usec = 3000000;
+		}
+		hid_replay_sleep(devices, usec);
 	}
 
 	for (i = 0; i < event_len; ++i) {
@@ -504,7 +514,7 @@ static int hid_replay_wait_opened(struct hid_replay_devices_list *devices)
 	return 0;
 }
 
-static int hid_replay_read_one(FILE *fp, struct hid_replay_devices_list *devices, struct timeval *time, bool accurate_timing)
+static int hid_replay_read_one(FILE *fp, struct hid_replay_devices_list *devices, struct timeval *ref_stream_time, struct timeval *ref_real_time, bool accurate_timing)
 {
 	char *buf = 0;
 	ssize_t size;
@@ -518,7 +528,7 @@ static int hid_replay_read_one(FILE *fp, struct hid_replay_devices_list *devices
 			break;
 		switch (buf[0]) {
 		case 'E':
-			hid_replay_event(devices->current->fuhid, buf, size, time, accurate_timing);
+			hid_replay_event(devices->current->fuhid, buf, size, ref_stream_time, ref_real_time, accurate_timing);
 			free(buf);
 			return 0;
 		case 'D':
@@ -561,7 +571,8 @@ int main(int argc, char **argv)
 {
 	struct uhid_event event;
 	struct uhid_create_req dev;
-	struct timeval time;
+	struct timeval ref_stream_time;
+	struct timeval ref_real_time;
 	int stop = 0;
 	char line[40];
 	char *hid_file;
@@ -637,10 +648,11 @@ int main(int argc, char **argv)
 		} else
 			stop = 1;
 
-		memset(&time, 0, sizeof(time));
+		memset(&ref_stream_time, 0, sizeof(ref_stream_time));
+		memset(&ref_real_time, 0, sizeof(ref_real_time));
 		fseek(fp, 0, SEEK_SET);
 		do {
-			error = hid_replay_read_one(fp, devices, &time, accurate_timing);
+			error = hid_replay_read_one(fp, devices, &ref_stream_time, &ref_real_time, accurate_timing);
 		} while (!error);
 	}
 
