@@ -90,6 +90,7 @@ static int usage(void)
 
 	printf("\n");
 	printf("where OPTION is either:\n");
+	printf("   -a or --accurate-timing: more accurately follow the original event timing\n");
 	printf("   -h or --help: print this message\n");
 	printf("   -i or --interactive: default mode: interactive mode (allow to control and to replay several times)\n");
 	printf("   -1 or --one: play once the events without waiting and then exit\n");
@@ -104,6 +105,7 @@ enum hid_replay_mode {
 };
 
 static const struct option long_options[] = {
+	{ "accurate-timing", no_argument, NULL, 'a' },
 	{ "help", no_argument, NULL, 'h' },
 	{ "sleep", required_argument, NULL, 's' },
 	{ "one", no_argument, NULL, '1' },
@@ -231,7 +233,7 @@ static void hid_replay_sleep(struct hid_replay_devices_list *devices,
 	} while (current_timeout > 0);
 }
 
-static void hid_replay_event(int fuhid, char *ubuf, ssize_t len, struct timeval *time)
+static void hid_replay_event(int fuhid, char *ubuf, ssize_t len, struct timeval *time, bool accurate_timing)
 {
 	struct uhid_event ev;
 	struct uhid_input_req *input = &ev.u.input;
@@ -256,7 +258,11 @@ static void hid_replay_event(int fuhid, char *ubuf, ssize_t len, struct timeval 
 	usec = 1000000L * (ev_time.tv_sec - time->tv_sec);
 	usec += ev_time.tv_usec - time->tv_usec;
 
-	if (usec > 500) {
+	if (accurate_timing && usec > 0) {
+		hid_replay_sleep(devices, usec);
+		*time = ev_time;
+	}
+	else if (usec > 500) {
 		if (usec > 3000000)
 			usec = 3000000;
 		hid_replay_sleep(devices, usec);
@@ -498,7 +504,7 @@ static int hid_replay_wait_opened(struct hid_replay_devices_list *devices)
 	return 0;
 }
 
-static int hid_replay_read_one(FILE *fp, struct hid_replay_devices_list *devices, struct timeval *time)
+static int hid_replay_read_one(FILE *fp, struct hid_replay_devices_list *devices, struct timeval *time, bool accurate_timing)
 {
 	char *buf = 0;
 	ssize_t size;
@@ -512,7 +518,7 @@ static int hid_replay_read_one(FILE *fp, struct hid_replay_devices_list *devices
 			break;
 		switch (buf[0]) {
 		case 'E':
-			hid_replay_event(devices->current->fuhid, buf, size, time);
+			hid_replay_event(devices->current->fuhid, buf, size, time, accurate_timing);
 			free(buf);
 			return 0;
 		case 'D':
@@ -559,6 +565,7 @@ int main(int argc, char **argv)
 	int stop = 0;
 	char line[40];
 	char *hid_file;
+	bool accurate_timing = false;
 	enum hid_replay_mode mode = MODE_INTERACTIVE;
 	int sleep_time = 0;
 	int error;
@@ -568,10 +575,13 @@ int main(int argc, char **argv)
 
 	while (1) {
 		int option_index = 0;
-		int c = getopt_long(argc, argv, "hi1s:", long_options, &option_index);
+		int c = getopt_long(argc, argv, "ahi1s:", long_options, &option_index);
 		if (c == -1)
 			break;
 		switch (c) {
+		case 'a':
+			accurate_timing = true;
+			break;
 		case '1':
 			mode = MODE_AUTO;
 			break;
@@ -630,7 +640,7 @@ int main(int argc, char **argv)
 		memset(&time, 0, sizeof(time));
 		fseek(fp, 0, SEEK_SET);
 		do {
-			error = hid_replay_read_one(fp, devices, &time);
+			error = hid_replay_read_one(fp, devices, &time, accurate_timing);
 		} while (!error);
 	}
 
